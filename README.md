@@ -423,6 +423,60 @@ Both interfaces send a **stop frame** immediately on connect and on disconnect s
 
 ---
 
+## Future Work — LED Control via BLE Sniffing
+
+The `w32 ControlHub` firmware uses pre-encoded proprietary hex frames for all commands (the same format as the drive and sound commands). To add LED control, the raw bytes for each LED state need to be captured from the official R2-D2 app.
+
+### How to capture LED commands using nRF Connect (iOS/Android)
+
+**What you need:** iPhone or Android with [nRF Connect](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-mobile) installed (free)
+
+**Step 1 — Connect nRF Connect to R2-D2**
+1. Power-cycle R2-D2
+2. Open nRF Connect → **Scanner** tab
+3. Find `w32 ControlHub` and tap **Connect**
+4. Tap the **Client** tab once connected
+
+**Step 2 — Enable logging**
+1. Tap the **⋮** menu (top right) → **Log**
+2. Make sure logging is enabled
+
+**Step 3 — Observe the characteristic**
+1. Expand the service `d9d9e9e0-aa4e-4797-8151-cb41cedaf2ad`
+2. Find characteristic `d9d9e9e1-aa4e-4797-8151-cb41cedaf2ad`
+3. Tap the **↓** (notify/indicate) button to subscribe to incoming values
+
+**Step 4 — Capture from the official app**
+
+> Because only one app can hold a BLE connection at a time, **disconnect nRF Connect first**, let the official Sphero/R2-D2 app connect, change LED colours, then reconnect nRF Connect to review the log. Alternatively use an Android phone with **Bluetooth HCI snoop log** enabled (Developer Options → Enable Bluetooth HCI snoop log) which passively captures all traffic.
+
+1. Disconnect nRF Connect
+2. Open the official **Sphero** app and connect to R2-D2
+3. Change the front LED to **red**, wait 2 seconds
+4. Change to **green**, wait 2 seconds
+5. Change to **blue**, wait 2 seconds
+6. Disconnect the Sphero app
+7. Reconnect nRF Connect and review the **Log** tab
+
+**Step 5 — Share the bytes**
+
+The log will show entries like:
+```
+Value written to D9D9E9E1: 1A 03 02 FF 00 00 ...
+```
+Those hex strings can be added to `R2D2-mcp.py` and `R2D2.html` using the same pattern as the existing `SOUNDS` and `DRIVE_CONTROLS` tables.
+
+### LED channels to capture
+
+| Channel | What to do in the app |
+|---|---|
+| Front RGB | Set body colour to pure red, green, blue |
+| Logic displays | Toggle logic display on/off |
+| Back RGB | Set back colour to pure red, green, blue |
+| Holo projector | Toggle holographic projector on/off |
+
+---
+
 ## Credits & References
 
 This project stands on the shoulders of prior reverse-engineering and open-source work.
