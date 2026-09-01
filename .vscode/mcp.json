@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "r2d2": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["${workspaceFolder}/R2D2-mcp.py"]
+    }
+  }
+}

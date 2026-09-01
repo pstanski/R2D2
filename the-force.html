@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Force — R2-D2 Gesture Controller</title>
+
+  <!-- MediaPipe Holistic: face mesh + hand tracking in one pass -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #0a0f1e;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 6px;
+      color: #60a5fa;
+      letter-spacing: 2px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      margin-bottom: 24px;
+      font-size: 0.9rem;
+    }
+
+    .layout {
+      display: flex;
+      gap: 20px;
+      max-width: 1100px;
+      margin: 0 auto;
+      flex-wrap: wrap;
+    }
+
+    .video-wrapper {
+      position: relative;
+      flex: 1 1 560px;
+    }
+
+    video {
+      width: 100%;
+      border-radius: 12px;
+      display: block;
+      transform: scaleX(-1); /* mirror for selfie view */
+    }
+
+    canvas#overlay {
+      position: absolute;
+      top: 0; left: 0;
+      /* width/height synced to video in JS — no CSS height to avoid flex-stretch */
+    }
+
+    .sidebar {
+      flex: 0 0 300px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 18px;
+    }
+
+    .panel h2 {
+      font-size: 1rem;
+      color: #94a3b8;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 0.9rem;
+    }
+
+    .badge {
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      font-weight: bold;
+    }
+    .badge.ok   { background: #14532d; color: #4ade80; }
+    .badge.off  { background: #450a0a; color: #f87171; }
+    .badge.warn { background: #431407; color: #fb923c; }
+
+    .big-indicator {
+      text-align: center;
+      font-size: 3.5rem;
+      margin: 8px 0;
+      min-height: 60px;
+    }
+
+    .tilt-bar-wrap {
+      background: #0f172a;
+      border-radius: 8px;
+      height: 18px;
+      position: relative;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    #tiltBar {
+      position: absolute;
+      top: 0; bottom: 0;
+      background: #3b82f6;
+      transition: left 0.05s, width 0.05s;
+      border-radius: 4px;
+    }
+
+    .tilt-centre {
+      position: absolute;
+      top: 0; bottom: 0; left: 50%;
+      width: 2px;
+      background: #475569;
+    }
+
+    .tilt-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: #475569;
+      margin-top: 4px;
+    }
+
+    button.start {
+      width: 100%;
+      padding: 14px;
+      background: #2563eb;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 1.1rem;
+      font-weight: bold;
+      cursor: pointer;
+      letter-spacing: 1px;
+    }
+    button.start:hover { background: #1d4ed8; }
+    button.start:disabled { background: #334155; color: #64748b; cursor: default; }
+
+    button.stop-btn {
+      width: 100%;
+      padding: 12px;
+      background: #dc2626;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button.stop-btn:hover { background: #b91c1c; }
+
+    #log {
+      background: #0f172a;
+      color: #4ade80;
+      font-family: monospace;
+      font-size: 0.75rem;
+      padding: 10px;
+      border-radius: 8px;
+      height: 140px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .instructions {
+      font-size: 0.82rem;
+      color: #64748b;
+      line-height: 1.7;
+    }
+    .instructions span {
+      color: #93c5fd;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+<h1>🌌 The Force</h1>
+<p class="subtitle">Control R2-D2 with your face &amp; hands</p>
+
+<div class="layout">
+
+  <!-- Webcam + landmark overlay -->
+  <div class="video-wrapper">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <!-- Sidebar controls -->
+  <div class="sidebar">
+
+    <div class="panel">
+      <h2>Status</h2>
+      <div class="status-row">
+        <span>R2-D2</span>
+        <span id="bleStatus" class="badge off">Disconnected</span>
+      </div>
+      <div class="status-row">
+        <span>Camera</span>
+        <span id="camStatus" class="badge off">Off</span>
+      </div>
+      <div class="status-row">
+        <span>Tracking</span>
+        <span id="trackStatus" class="badge off">Inactive</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Head Tilt → Steering</h2>
+      <div class="big-indicator" id="tiltEmoji">😐</div>      <div style="text-align:center;font-size:0.8rem;color:#64748b;margin-bottom:6px;" id="tiltAngle">Calibrating…</div>      <div class="tilt-bar-wrap">
+        <div class="tilt-centre"></div>
+        <div id="tiltBar" style="left:47%;width:6%;"></div>
+      </div>
+      <div class="tilt-label"><span>◀ Left</span><span>Right ▶</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Open Hand → Drive</h2>
+      <div class="big-indicator" id="driveEmoji">🔚</div>
+      <div style="text-align:center;font-size:0.85rem;color:#64748b;" id="driveName">No hand</div>
+    </div>
+
+    <div class="panel">
+      <h2>Thumbs Up → Sound</h2>
+      <div class="big-indicator" id="gestureEmoji">✋</div>
+      <div style="text-align:center;font-size:0.85rem;color:#64748b;" id="gestureName">No gesture</div>
+    </div>
+
+    <button class="start" id="startBtn" onclick="startForce()">
+      ⚡ ACTIVATE THE FORCE
+    </button>
+
+    <button class="stop-btn" id="stopBtn" onclick="toggleControls()">
+      ■ STOP R2-D2
+    </button>
+
+    <div class="panel">
+      <h2>How to use</h2>
+      <div class="instructions">
+        <span>↔ Tilt head</span> left/right to steer R2-D2<br>
+        <span>🖐 Open hand</span> move closer = push back, farther = pull forward<br>
+        <span>👍 Thumbs up</span> plays a random sound<br>
+        <span>■ Stop</span> halts R2-D2 and pauses gesture control<br>
+        R2-D2 must be on and advertising before clicking Activate.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Log</h2>
+      <div id="log"></div>
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+
+/* ============================================================
+   BLE
+============================================================ */
+
+const SERVICE_UUID        = "d9d9e9e0-aa4e-4797-8151-cb41cedaf2ad";
+const CHARACTERISTIC_UUID = "d9d9e9e1-aa4e-4797-8151-cb41cedaf2ad";
+const STOP_FRAME          = "140202897BCC";
+
+let bluetoothDevice = null;
+let characteristic  = null;
+let controlsActive  = true; // false while paused by stop button
+
+async function toggleControls() {
+  const btn = document.getElementById("stopBtn");
+  if (controlsActive) {
+    controlsActive = false;
+    await sendCommand(STOP_FRAME);
+    lastTurnIndex = -1;
+    lastDriveIdx  = STOP_IDX;
+    btn.textContent = "▶ RESUME CONTROL";
+    btn.style.background = "#16a34a";
+    log("Paused — gesture control suspended.");
+  } else {
+    controlsActive = true;
+    lastTurnIndex = -1; // force re-send of straight on next frame
+    btn.textContent = "■ STOP R2-D2";
+    btn.style.background = "";
+    log("Resumed gesture control.");
+  }
+}
+
+async function connectToDevice(device) {
+  device.addEventListener("gattserverdisconnected", onBLEDisconnected);
+  const server  = await device.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE_UUID);
+  characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+  bluetoothDevice = device;
+  setBadge("bleStatus", "Connected", "ok");
+  log("BLE connected — sending safety stop + straight.");
+  await sendCommand(STOP_FRAME);
+  await sendCommand(TURN_COMMANDS[STRAIGHT_IDX]);
+}
+
+async function connectBLE() {
+  log("Requesting Bluetooth device…");
+  const device = await navigator.bluetooth.requestDevice({
+    acceptAllDevices: true,
+    optionalServices: [SERVICE_UUID]
+  });
+  log("Selected: " + (device.name || "Unknown"));
+  await connectToDevice(device);
+}
+
+// Called on page load — tries to reconnect a previously paired R2D2 silently
+async function tryAutoConnect() {
+  if (!navigator.bluetooth?.getDevices) return;
+  try {
+    const devices = await navigator.bluetooth.getDevices();
+    const r2d2 = devices.find(d => d.name && d.name.includes("w32"));
+    if (!r2d2) return;
+    setBadge("bleStatus", "Auto-connecting…", "warn");
+    log("Previously paired R2-D2 found — auto-connecting…");
+    await connectToDevice(r2d2);
+    log("Auto-connected to " + r2d2.name);
+  } catch (e) {
+    log("Auto-connect failed: " + e.message);
+    setBadge("bleStatus", "Disconnected", "off");
+  }
+}
+
+async function sendCommand(hex) {
+  if (!characteristic) return;
+  try {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2)
+      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    await characteristic.writeValueWithResponse(bytes);
+  } catch (e) {
+    log("BLE write error: " + e.message);
+  }
+}
+
+function onBLEDisconnected() {
+  log("R2-D2 disconnected.");
+  characteristic = null;
+  setBadge("bleStatus", "Disconnected", "off");
+}
+
+async function emergencyStop() {
+  controlsActive = false;
+  await sendCommand(STOP_FRAME);
+  lastTurnIndex = -1;
+  lastDriveIdx  = STOP_IDX;
+  log("STOP");
+}
+
+
+/* ============================================================
+   TURN COMMANDS  (0 = hard left, 17 = straight, 32 = hard right)
+============================================================ */
+
+const TURN_COMMANDS = [
+  "140201FC00AD","140201EA725A","140201E49394","140201DF14AC","140201D9746A",
+  "140201D1F562","140201CC36FE","140201C697B4","140201C0F772","140201B918CC",
+  "140201B4C961","140201AE7A1A","140201A7EB33","140201A2BB96","1402019C6C0B",
+  "14020196CD41","14020190AD87",
+  "1402018A1EFC",  // straight (index 17)
+  "14020184FF32","1402017EB167","14020178D1A1","1402017270EB","1402016C8314",
+  "14020166225E","140201604298","1402015AD581","14020154344F","1402014F9715",
+  "14020149F7D3","1402014246B8","1402013CD9E1","1402013548C8","140201002E3E"
+];
+
+const STRAIGHT_IDX = 17;
+let lastTurnIndex  = -1;   // -1 forces first steer command to always be sent
+const TILT_DEAD    = 0.06;  // eye height-diff ratio below which steering is neutral
+const MAX_TILT     = 0.40;  // ratio for full lock (~22° of head roll)
+const MAX_STEER    = 0.55;
+
+async function steer(normalisedValue) {
+  const clamped = Math.max(-MAX_STEER, Math.min(MAX_STEER, normalisedValue));
+  // Map symmetrically: 0 → index 17 (straight), +1 → 32, -1 → 0
+  let idx;
+  if (clamped >= 0) idx = STRAIGHT_IDX + Math.round(clamped * (TURN_COMMANDS.length - 1 - STRAIGHT_IDX));
+  else              idx = STRAIGHT_IDX + Math.round(clamped * STRAIGHT_IDX);
+  if (idx === lastTurnIndex) return;
+  lastTurnIndex = idx;
+  await sendCommand(TURN_COMMANDS[idx]);
+}
+
+
+/* ============================================================
+   DRIVE COMMANDS  (0 = full reverse, 31 = stop, 61 = full forward)
+============================================================ */
+
+const DRIVE_COMMANDS = [
+  "140202FF659D","140202FA3538","140202F6F4B4","140202F2B430","140202ED57EE",
+  "140202EA2709","140202E6E685","140202E3B620","140202DF41FF","140202DA115A",
+  "140202D6D0D6","140202D29052","140202CE43EF","140202CA036B","140202C5F284",
+  "140202C28263","140202BE3D78","140202BA7DFC","140202B6BC70","140202B2FCF4",
+  "140202AB7FEC","140202AA6FCD","140202A6AE41","140202A2EEC5","140202A1DEA6",
+  "1402029E191A","1402029969FD","140202969812","14020292D896","1402028D3B48",
+  "1402028A4BAF","140202897BCC",  // stop (index 31)
+  "1402027DD457","1402027994D3","14020276653C","1402027225B8","1402026EF605",
+  "1402026DC666","1402026896C3","1402026327A8","1402026107EA","1402025CE014",
+  "14020259B0B1","14020255713D","140202502198","1402024B82C2","14020249A280",
+  "14020245630C","140202412388","1402023BFC55","14020239DC17","140202337D5D",
+  "140202304D3E","1402022BEE64","14020229CE26","140202214F2E","140202205F0F",
+  "1402021BD837","14020218E854","1402021429D8","1402020F8A82","1402020CBAE1",
+  "140202070B8A"
+];
+
+const STOP_IDX       = 31;
+let lastDriveIdx     = STOP_IDX;
+let smoothHandSize   = 0;
+let prevHandSize     = 0;
+let smoothHandVel    = 0;
+const HAND_SMOOTH    = 0.25;   // size smoothing
+const VEL_SMOOTH     = 0.35;   // velocity smoothing
+const VEL_DEAD       = 0.004;  // size-change/frame below which we stop
+const VEL_RANGE      = 0.018;  // size-change/frame for full speed
+const MAX_FWD_IDX    = 48;     // cap forward speed
+const MAX_REV_IDX    = 18;     // cap reverse speed
+
+async function drive(normalisedValue) {
+  const clamped = Math.max(-1, Math.min(1, normalisedValue));
+  // map 0=stop: fwd mapped into 31..MAX_FWD, rev into MAX_REV..31
+  let idx;
+  if (clamped >= 0) idx = Math.round(STOP_IDX + clamped * (MAX_FWD_IDX - STOP_IDX));
+  else              idx = Math.round(STOP_IDX + clamped * (STOP_IDX - MAX_REV_IDX));
+  idx = Math.max(MAX_REV_IDX, Math.min(MAX_FWD_IDX, idx));
+  if (idx === lastDriveIdx) return;
+  lastDriveIdx = idx;
+  await sendCommand(DRIVE_COMMANDS[idx]);
+}
+
+
+/* ============================================================
+   SOUNDS
+============================================================ */
+
+const SOUNDS = {
+  "Grump":"1E011B42AA","Scold":"1E011A528B","Chitter":"1E011962E8",
+  "Chattering":"1E011872C9","I Love You":"1E01178326","Bleep":"1E01169307",
+  "Beep":"1E0115A364","Whistle":"1E0114B345","Descending":"1E0113C3A2",
+  "Excited":"1E0112D383","Cheery":"1E0111E3E0","Sad":"1E0110F3C1",
+  "Scream":"1E010F101F","Startup":"1E010E003E","Surprise":"1E010C207C",
+  "Story":"1E010A40BA","Wow":"1E010860F8","Thbt":"1E01068136",
+  "Worried":"1E0104A174","Dubious":"1E0102C1B2",
+  "Board Startup":"1E0101F1D1","Thinking":"1E0100E1F0"
+};
+
+const SOUND_NAMES   = Object.keys(SOUNDS);
+let soundCooldown   = false;
+
+async function playRandomSound() {
+  if (soundCooldown) return;
+  soundCooldown = true;
+  const name = SOUND_NAMES[Math.floor(Math.random() * SOUND_NAMES.length)];
+  log("🔊 " + name);
+  await sendCommand(SOUNDS[name]);
+  document.getElementById("gestureName").textContent = name;
+  setTimeout(() => {
+    soundCooldown = false;
+    document.getElementById("gestureName").textContent = "No gesture";
+  }, 2500);
+}
+
+
+/* ============================================================
+   MEDIAPIPE HOLISTIC
+============================================================ */
+
+const videoEl  = document.getElementById("webcam");
+const canvas   = document.getElementById("overlay");
+const ctx      = canvas.getContext("2d");
+
+// Head tilt smoothing
+let smoothTilt     = 0;
+const TILT_SMOOTH  = 0.2;
+let tiltBaseline   = null;      // calibrated straight-ahead eye height diff
+let tiltCalibAcc   = 0;
+let tiltCalibCount = 0;
+const TILT_CALIB_FRAMES = 40;
+
+// Thumbs-up hold counter (require N consecutive frames)
+const THUMBS_FRAMES_NEEDED = 6;
+let thumbsCounter = 0;
+
+// Mouth-open hold counter
+const MOUTH_FRAMES_NEEDED = 5;
+let mouthCounter = 0;
+
+// Open-hand hold counter
+const HAND_FRAMES_NEEDED = 4;
+let openHandCounter = 0;
+
+function flipX(landmarks) {
+  return landmarks.map(p => ({ x: 1 - p.x, y: p.y, z: p.z }));
+}
+
+function onResults(results) {
+  // Sync canvas pixel + CSS size exactly to the displayed video element
+  canvas.width        = videoEl.videoWidth  || 640;
+  canvas.height       = videoEl.videoHeight || 480;
+  canvas.style.width  = videoEl.offsetWidth  + 'px';
+  canvas.style.height = videoEl.offsetHeight + 'px';
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  setBadge("trackStatus", "Active", "ok");
+
+  /* ---- Face: head tilt via eye corners ---- */
+  if (results.faceLandmarks) {
+    const lmF = flipX(results.faceLandmarks);
+
+    drawConnectors(ctx, lmF, FACEMESH_TESSELATION,
+      { color: "#1e3a5f", lineWidth: 0.5 });
+    drawConnectors(ctx, lmF, FACEMESH_RIGHT_EYE,
+      { color: "#3b82f6", lineWidth: 2 });
+    drawConnectors(ctx, lmF, FACEMESH_LEFT_EYE,
+      { color: "#3b82f6", lineWidth: 2 });
+
+    const leftEye  = lmF[33];   // outer corner of person's left eye
+    const rightEye = lmF[263];  // outer corner of person's right eye
+
+    // Normalise by eye-to-eye width so the value is scale-independent.
+    // Positive = left eye higher than right = turn right.
+    // Negative = right eye higher than left = turn left.
+    const eyeSpan = Math.max(rightEye.x - leftEye.x, 0.01);
+    const rawRatio = (rightEye.y - leftEye.y) / eyeSpan;
+
+    // Auto-calibrate baseline during first TILT_CALIB_FRAMES frames
+    if (tiltCalibCount < TILT_CALIB_FRAMES) {
+      tiltCalibAcc += rawRatio;
+      tiltCalibCount++;
+      document.getElementById("tiltAngle").textContent =
+        `Calibrating ${tiltCalibCount}/${TILT_CALIB_FRAMES}…`;
+      if (tiltCalibCount === TILT_CALIB_FRAMES) {
+        tiltBaseline = tiltCalibAcc / TILT_CALIB_FRAMES;
+        lastTurnIndex = -1;
+        log(`Eye tilt calibrated (baseline ratio: ${tiltBaseline.toFixed(3)})`);
+      }
+      updateTiltUI(0, 0);
+      return;
+    }
+
+    const corrected = rawRatio - tiltBaseline;
+    smoothTilt = smoothTilt + TILT_SMOOTH * (corrected - smoothTilt);
+    document.getElementById("tiltAngle").textContent =
+      (smoothTilt > 0 ? "L eye up " : "R eye up ") + Math.abs(smoothTilt).toFixed(3);
+
+    const absT = Math.abs(smoothTilt);
+    let norm = 0;
+    if (absT > TILT_DEAD) {
+      norm = Math.sign(smoothTilt) *
+             Math.min((absT - TILT_DEAD) / (MAX_TILT - TILT_DEAD), MAX_STEER);
+    }
+
+    updateTiltUI(smoothTilt, norm);
+    // steer command intentionally disabled — display only
+  }
+
+  /* ---- Hands: open hand → drive + thumbs up → sound ---- */
+  const hands = [
+    results.rightHandLandmarks ? flipX(results.rightHandLandmarks) : null,
+    results.leftHandLandmarks  ? flipX(results.leftHandLandmarks)  : null
+  ].filter(Boolean);
+
+  let thumbsUp  = false;
+  let openHand  = false;
+  let bestSize  = 0;
+
+  for (const lm of hands) {
+    drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: "#7c3aed", lineWidth: 2 });
+    drawLandmarks(ctx, lm, { color: "#a78bfa", lineWidth: 1, radius: 3 });
+
+    if (isThumbsUp(lm)) thumbsUp = true;
+
+    if (isOpenHand(lm)) {
+      openHand = true;
+      // bbox diagonal as size proxy (larger = closer to camera)
+      const xs = lm.map(p => p.x), ys = lm.map(p => p.y);
+      const w = Math.max(...xs) - Math.min(...xs);
+      const h = Math.max(...ys) - Math.min(...ys);
+      bestSize = Math.max(bestSize, Math.hypot(w, h));
+    }
+  }
+
+  /* -- Open hand drive -- */
+  if (openHand) {
+    openHandCounter = Math.min(openHandCounter + 1, HAND_FRAMES_NEEDED);
+  } else {
+    openHandCounter = Math.max(openHandCounter - 1, 0);
+  }
+
+  if (openHandCounter >= HAND_FRAMES_NEEDED) {
+    // Smooth the raw size
+    smoothHandSize = smoothHandSize + HAND_SMOOTH * (bestSize - smoothHandSize);
+
+    // Velocity = how much size changed this frame (positive = hand coming closer)
+    const vel = smoothHandSize - prevHandSize;
+    prevHandSize = smoothHandSize;
+    smoothHandVel = smoothHandVel + VEL_SMOOTH * (vel - smoothHandVel);
+
+    let driveNorm = 0;
+    // Invert: hand closer (vel>0) = push backward; hand farther (vel<0) = pull forward
+    if (smoothHandVel > VEL_DEAD)
+      driveNorm = -Math.min((smoothHandVel - VEL_DEAD) / VEL_RANGE, 1);
+    else if (smoothHandVel < -VEL_DEAD)
+      driveNorm =  Math.min((-smoothHandVel - VEL_DEAD) / VEL_RANGE, 1);
+
+    updateDriveUI(driveNorm);
+    if (characteristic && controlsActive) drive(driveNorm);
+  } else {
+    // No open hand — stop and reset velocity state
+    smoothHandVel = 0;
+    prevHandSize  = smoothHandSize; // no jump on re-entry
+    if (lastDriveIdx !== STOP_IDX) {
+      lastDriveIdx = STOP_IDX;
+      if (characteristic) sendCommand(DRIVE_COMMANDS[STOP_IDX]);
+    }
+    if (!openHand) {
+      document.getElementById("driveEmoji").textContent = "🔚";
+      document.getElementById("driveName").textContent  = "No hand";
+      smoothHandSize = 0;
+      prevHandSize   = 0;
+    }
+  }
+
+  /* -- Thumbs up -- */
+  if (thumbsUp) {
+    thumbsCounter++;
+    if (thumbsCounter === THUMBS_FRAMES_NEEDED) {
+      document.getElementById("gestureEmoji").textContent = "👍";
+      if (characteristic) playRandomSound();
+    }
+  } else {
+    if (thumbsCounter >= THUMBS_FRAMES_NEEDED)
+      document.getElementById("gestureEmoji").textContent = "✋";
+    thumbsCounter = 0;
+  }
+
+  /* -- Mouth open — scream -- */
+  const mouthOpen = results.faceLandmarks && isMouthOpen(flipX(results.faceLandmarks));
+  if (mouthOpen) {
+    mouthCounter++;
+    if (mouthCounter === MOUTH_FRAMES_NEEDED) {
+      document.getElementById("gestureEmoji").textContent = "😱";
+      if (characteristic && !soundCooldown) {
+        soundCooldown = true;
+        sendCommand(SOUNDS["Scream"]);
+        document.getElementById("gestureName").textContent = "Scream!!";
+        setTimeout(() => {
+          soundCooldown = false;
+          document.getElementById("gestureName").textContent = "No gesture";
+        }, 2500);
+      }
+    }
+  } else {
+    if (mouthCounter >= MOUTH_FRAMES_NEEDED)
+      document.getElementById("gestureEmoji").textContent = "✋";
+    mouthCounter = 0;
+  }
+}
+
+function isMouthOpen(lm) {
+  // Ratio of mouth opening height to mouth width; > 0.35 = clearly open
+  const height = lm[14].y - lm[13].y;
+  const width  = Math.max(lm[308].x - lm[78].x, 0.01);
+  return (height / width) > 0.35;
+}
+
+function isThumbsUp(lm) {
+  // Thumb tip must be clearly above the thumb MCP (upward = lower y in image coords)
+  const thumbExtended = lm[4].y < lm[2].y - 0.04;
+
+  // All four fingers must be curled: tip y > pip y
+  const fingersCurled =
+    lm[8].y  > lm[6].y  &&
+    lm[12].y > lm[10].y &&
+    lm[16].y > lm[14].y &&
+    lm[20].y > lm[18].y;
+
+  return thumbExtended && fingersCurled;
+}
+
+function isOpenHand(lm) {
+  // All 4 fingers extended: tip y < mcp y (finger pointing away from wrist)
+  return lm[8].y  < lm[5].y  &&
+         lm[12].y < lm[9].y  &&
+         lm[16].y < lm[13].y &&
+         lm[20].y < lm[17].y;
+}
+
+function updateDriveUI(norm) {
+  const emoji = norm > 0.1 ? "⏩" : norm < -0.1 ? "⏪" : "⏹";
+  const label = norm > 0.1 ? `Forward (${(norm*100).toFixed(0)}%)` :
+                norm < -0.1 ? `Reverse (${(-norm*100).toFixed(0)}%)` : "Holding";
+  document.getElementById("driveEmoji").textContent = emoji;
+  document.getElementById("driveName").textContent  = label;
+}
+
+function updateTiltUI(deg, norm) {
+  // Tilt bar: centre = 50%; norm maps ±1 → offset ±45%
+  const barCentre = 50 + norm * 43;
+  const barWidth  = 6 + Math.abs(norm) * 8;
+  document.getElementById("tiltBar").style.left  = (barCentre - barWidth / 2) + "%";
+  document.getElementById("tiltBar").style.width = barWidth + "%";
+
+  // Emoji
+  const emoji =
+    norm < -0.6 ? "😮" :
+    norm < -0.15 ? "😏" :
+    norm >  0.6 ? "😮" :
+    norm >  0.15 ? "😏" :
+    "😐";
+  document.getElementById("tiltEmoji").textContent = emoji;
+}
+
+
+/* ============================================================
+   STARTUP
+============================================================ */
+
+async function startForce() {
+  const btn = document.getElementById("startBtn");
+  btn.disabled = true;
+  btn.textContent = "Connecting…";
+
+  // 1. BLE — skip picker if already auto-connected
+  if (!characteristic) {
+    try {
+      await connectBLE();
+    } catch (e) {
+      log("BLE failed: " + e.message);
+      setBadge("bleStatus", "Failed", "warn");
+      btn.disabled = false;
+      btn.textContent = "⚡ ACTIVATE THE FORCE";
+      return;
+    }
+  }
+
+  // 2. Camera — let MediaPipe Camera utility open the webcam (avoids double permission prompt)
+  const holistic = new Holistic({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${f}`
+  });
+  holistic.setOptions({
+    modelComplexity: 1,
+    smoothLandmarks: true,
+    refineFaceLandmarks: true,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.5
+  });
+  holistic.onResults(onResults);
+
+  const camera = new Camera(videoEl, {
+    onFrame: async () => { await holistic.send({ image: videoEl }); },
+    width: 640,
+    height: 480
+  });
+  camera.start();
+  setBadge("camStatus", "On", "ok");
+  log("Camera + tracking started.");
+
+  btn.textContent = "✅ Active";
+}
+
+
+/* ============================================================
+   UTILITIES
+============================================================ */
+
+function setBadge(id, text, state) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "badge " + state;
+}
+
+function log(msg) {
+  const el = document.getElementById("log");
+  el.textContent += msg + "\n";
+  el.scrollTop = el.scrollHeight;
+  console.log(msg);
+}
+
+// Attempt silent auto-connect on page load (works if R2D2 was previously paired)
+window.addEventListener("load", () => tryAutoConnect());
+
+</script>
+</body>
+</html>

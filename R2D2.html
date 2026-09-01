@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>R2-D2 Bluetooth Controller</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #111827;
+      color: white;
+    }
+
+    h1 {
+      text-align: center;
+    }
+
+    .panel {
+      background: #1f2937;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    button {
+      background: #2563eb;
+      border: none;
+      color: white;
+      padding: 12px 20px;
+      margin: 5px;
+      border-radius: 7px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button.stop {
+      background: #dc2626;
+      font-size: 20px;
+      font-weight: bold;
+      padding: 15px 40px;
+    }
+
+    button.stop:hover {
+      background: #b91c1c;
+    }
+
+    button.disconnect {
+      background: #6b7280;
+    }
+
+    .status {
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    .connected {
+      color: #22c55e;
+    }
+
+    .disconnected {
+      color: #ef4444;
+    }
+
+    input[type="range"] {
+      width: 100%;
+    }
+
+    .slider-row {
+      margin: 25px 0;
+    }
+
+    .slider-value {
+      font-family: monospace;
+      font-size: 18px;
+    }
+
+    #soundButtons {
+      display: flex;
+      flex-wrap: wrap;
+    }
+
+    #log {
+      background: black;
+      color: #22c55e;
+      padding: 15px;
+      min-height: 120px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>🤖 R2-D2 Controller</h1>
+
+<div class="panel">
+
+  <div id="status" class="status disconnected">
+    ● Disconnected
+  </div>
+
+  <button onclick="connectR2D2()">
+    Connect R2-D2
+  </button>
+
+  <button class="disconnect" onclick="disconnectR2D2()">
+    Disconnect
+  </button>
+
+</div>
+
+
+<div class="panel">
+
+  <h2>Drive</h2>
+
+  <div class="slider-row">
+
+    <label>
+      Speed:
+      <span id="speedValue" class="slider-value">0.00</span>
+    </label>
+
+    <input
+      id="speedSlider"
+      type="range"
+      min="-100"
+      max="100"
+      value="0"
+    />
+
+  </div>
+
+
+  <h2>Steering</h2>
+
+  <div class="slider-row">
+
+    <label>
+      Steering:
+      <span id="steeringValue" class="slider-value">0.00</span>
+    </label>
+
+    <input
+      id="steeringSlider"
+      type="range"
+      min="-100"
+      max="100"
+      value="0"
+    />
+
+  </div>
+
+
+  <div style="text-align:center">
+
+    <button onclick="steer(-1)">
+      ◀ Full Left
+    </button>
+
+    <button onclick="steer(0)">
+      Centre
+    </button>
+
+    <button onclick="steer(1)">
+      Full Right ▶
+    </button>
+
+    <br><br>
+
+    <button class="stop" onclick="stopR2D2()">
+      STOP
+    </button>
+
+  </div>
+
+</div>
+
+
+<div class="panel">
+
+  <h2>Sounds</h2>
+
+  <div id="soundButtons"></div>
+
+</div>
+
+
+<div class="panel">
+
+  <h2>Debug Log</h2>
+
+  <div id="log"></div>
+
+</div>
+
+
+<script>
+
+/* ============================================================
+   BLE CONFIGURATION
+============================================================ */
+
+const SERVICE_UUID =
+  "d9d9e9e0-aa4e-4797-8151-cb41cedaf2ad";
+
+const CHARACTERISTIC_UUID =
+  "d9d9e9e1-aa4e-4797-8151-cb41cedaf2ad";
+
+let bluetoothDevice = null;
+let characteristic = null;
+
+
+/* ============================================================
+   LOGGING
+============================================================ */
+
+function log(message) {
+
+  console.log(message);
+
+  const div = document.getElementById("log");
+
+  div.textContent += message + "\n";
+
+  div.scrollTop = div.scrollHeight;
+}
+
+
+/* ============================================================
+   BLUETOOTH
+============================================================ */
+
+async function connectR2D2() {
+
+  try {
+
+    log("Requesting Bluetooth device...");
+
+    bluetoothDevice =
+      await navigator.bluetooth.requestDevice({
+
+        acceptAllDevices: true,
+
+        optionalServices: [
+          SERVICE_UUID
+        ]
+
+      });
+
+
+    log(
+      "Selected device: " +
+      (bluetoothDevice.name || "Unknown")
+    );
+
+
+    bluetoothDevice.addEventListener(
+      "gattserverdisconnected",
+      onDisconnected
+    );
+
+
+    log("Connecting to GATT server...");
+
+    const server =
+      await bluetoothDevice.gatt.connect();
+
+
+    log("Getting R2-D2 service...");
+
+    const service =
+      await server.getPrimaryService(
+        SERVICE_UUID
+      );
+
+
+    log("Getting command characteristic...");
+
+    characteristic =
+      await service.getCharacteristic(
+        CHARACTERISTIC_UUID
+      );
+
+
+    updateConnectionStatus(true);
+
+
+    log("Connected to R2-D2");
+
+
+    /*
+      Important safety behaviour.
+
+      Immediately stop the robot whenever
+      a connection is established.
+    */
+
+    await stopR2D2();
+
+
+    await centreSteering();
+
+  }
+  catch (error) {
+
+    log(
+      "Bluetooth error: " +
+      error.message
+    );
+
+  }
+
+}
+
+
+async function disconnectR2D2() {
+
+  if (
+    bluetoothDevice &&
+    bluetoothDevice.gatt.connected
+  ) {
+
+    try {
+
+      await stopR2D2();
+
+    }
+    catch {}
+
+    bluetoothDevice.gatt.disconnect();
+
+  }
+
+}
+
+
+function onDisconnected() {
+
+  log("R2-D2 disconnected");
+
+  characteristic = null;
+
+  updateConnectionStatus(false);
+
+}
+
+
+function updateConnectionStatus(connected) {
+
+  const status =
+    document.getElementById("status");
+
+  if (connected) {
+
+    status.textContent =
+      "● Connected to R2-D2";
+
+    status.className =
+      "status connected";
+
+  }
+  else {
+
+    status.textContent =
+      "● Disconnected";
+
+    status.className =
+      "status disconnected";
+
+  }
+
+}
+
+
+/* ============================================================
+   LOW-LEVEL COMMAND WRITER
+============================================================ */
+
+async function sendCommand(hex) {
+
+  if (!characteristic) {
+
+    log(
+      "Cannot send command - R2-D2 is not connected."
+    );
+
+    return;
+  }
+
+
+  const bytes =
+    hexToBytes(hex);
+
+
+  log(
+    "BLE TX: " +
+    hex
+  );
+
+
+  try {
+
+    await characteristic.writeValueWithResponse(
+      bytes
+    );
+
+  }
+  catch (error) {
+
+    log(
+      "BLE write error: " +
+      error.message
+    );
+
+  }
+
+}
+
+
+/* ============================================================
+   HEX CONVERSION
+============================================================ */
+
+function hexToBytes(hex) {
+
+  const bytes =
+    new Uint8Array(
+      hex.length / 2
+    );
+
+
+  for (
+    let i = 0;
+    i < hex.length;
+    i += 2
+  ) {
+
+    bytes[i / 2] =
+      parseInt(
+        hex.substring(
+          i,
+          i + 2
+        ),
+        16
+      );
+
+  }
+
+  return bytes;
+
+}
+
+
+/* ============================================================
+   DRIVE COMMANDS
+============================================================ */
+
+const DRIVE_COMMANDS = [
+
+"140202FF659D",
+"140202FA3538",
+"140202F6F4B4",
+"140202F2B430",
+"140202ED57EE",
+"140202EA2709",
+"140202E6E685",
+"140202E3B620",
+"140202DF41FF",
+"140202DA115A",
+"140202D6D0D6",
+"140202D29052",
+"140202CE43EF",
+"140202CA036B",
+"140202C5F284",
+"140202C28263",
+"140202BE3D78",
+"140202BA7DFC",
+"140202B6BC70",
+"140202B2FCF4",
+"140202AB7FEC",
+"140202AA6FCD",
+"140202A6AE41",
+"140202A2EEC5",
+"140202A1DEA6",
+"1402029E191A",
+"1402029969FD",
+"140202969812",
+"14020292D896",
+"1402028D3B48",
+"1402028A4BAF",
+
+// STOP
+
+"140202897BCC",
+
+"1402027DD457",
+"1402027994D3",
+"14020276653C",
+"1402027225B8",
+"1402026EF605",
+"1402026DC666",
+"1402026896C3",
+"1402026327A8",
+"1402026107EA",
+"1402025CE014",
+"14020259B0B1",
+"14020255713D",
+"140202502198",
+"1402024B82C2",
+"14020249A280",
+"14020245630C",
+"140202412388",
+"1402023BFC55",
+"14020239DC17",
+"140202337D5D",
+"140202304D3E",
+"1402022BEE64",
+"14020229CE26",
+"140202214F2E",
+"140202205F0F",
+"1402021BD837",
+"14020218E854",
+"1402021429D8",
+"1402020F8A82",
+"1402020CBAE1",
+"140202070B8A"
+
+];
+
+
+const STOP_COMMAND =
+  "140202897BCC";
+
+
+/* ============================================================
+   SEMANTIC DRIVE API
+
+   speed ranges:
+
+   -1.0 = full reverse
+    0.0 = stop
+   +1.0 = full forward
+============================================================ */
+
+async function drive(speed) {
+
+  speed =
+    Math.max(
+      -1,
+      Math.min(
+        1,
+        speed
+      )
+    );
+
+
+  /*
+      The original R2D2 protocol happens
+      to have its speed values reversed
+      relative to the array order.
+
+      Array index:
+
+      0  = one extreme
+      31 = stop
+      62 = opposite extreme
+  */
+
+
+  const centre = 31;
+
+  let index;
+
+
+  /*
+      This preserves the behaviour of
+      your original slider.
+
+      Flip this calculation if forward
+      and reverse are opposite.
+  */
+
+  index =
+    Math.round(
+      centre +
+      speed * 31
+    );
+
+
+  index =
+    Math.max(
+      0,
+      Math.min(
+        DRIVE_COMMANDS.length - 1,
+        index
+      )
+    );
+
+
+  log(
+    `drive speed=${speed.toFixed(2)} index=${index}`
+  );
+
+
+  await sendCommand(
+    DRIVE_COMMANDS[index]
+  );
+
+}
+
+
+async function stopR2D2() {
+
+  log("STOP");
+
+  await sendCommand(
+    STOP_COMMAND
+  );
+
+
+  document.getElementById(
+    "speedSlider"
+  ).value = 0;
+
+
+  document.getElementById(
+    "speedValue"
+  ).textContent = "0.00";
+
+}
+
+
+/* ============================================================
+   STEERING COMMANDS
+============================================================ */
+
+const TURN_COMMANDS = [
+
+"140201FC00AD",
+"140201EA725A",
+"140201E49394",
+"140201DF14AC",
+"140201D9746A",
+"140201D1F562",
+"140201CC36FE",
+"140201C697B4",
+"140201C0F772",
+"140201B918CC",
+"140201B4C961",
+"140201AE7A1A",
+"140201A7EB33",
+"140201A2BB96",
+"1402019C6C0B",
+"14020196CD41",
+"14020190AD87",
+
+// STRAIGHT
+
+"1402018A1EFC",
+
+"14020184FF32",
+"1402017EB167",
+"14020178D1A1",
+"1402017270EB",
+"1402016C8314",
+"14020166225E",
+"140201604298",
+"1402015AD581",
+"14020154344F",
+"1402014F9715",
+"14020149F7D3",
+"1402014246B8",
+"1402013CD9E1",
+"1402013548C8",
+"140201002E3E"
+
+];
+
+
+/* ============================================================
+   SEMANTIC STEERING API
+
+   -1 = full left
+    0 = straight
+   +1 = full right
+============================================================ */
+
+async function steer(value) {
+
+  value =
+    Math.max(
+      -1,
+      Math.min(
+        1,
+        value
+      )
+    );
+
+
+  const maxIndex =
+    TURN_COMMANDS.length - 1;
+
+
+  const index =
+    Math.round(
+      ((value + 1) / 2) *
+      maxIndex
+    );
+
+
+  log(
+    `steer=${value.toFixed(2)} index=${index}`
+  );
+
+
+  await sendCommand(
+    TURN_COMMANDS[index]
+  );
+
+
+  const slider =
+    document.getElementById(
+      "steeringSlider"
+    );
+
+
+  slider.value =
+    Math.round(
+      value * 100
+    );
+
+
+  document.getElementById(
+    "steeringValue"
+  ).textContent =
+    value.toFixed(2);
+
+}
+
+
+async function centreSteering() {
+
+  await steer(0);
+
+}
+
+
+/* ============================================================
+   R2-D2 SOUNDS
+============================================================ */
+
+const SOUNDS = {
+
+  "Grump":
+    "1E011B42AA",
+
+  "Scold":
+    "1E011A528B",
+
+  "Chitter":
+    "1E011962E8",
+
+  "Chattering":
+    "1E011872C9",
+
+  "I Love You":
+    "1E01178326",
+
+  "Bleep":
+    "1E01169307",
+
+  "Beep":
+    "1E0115A364",
+
+  "Whistle":
+    "1E0114B345",
+
+  "Descending":
+    "1E0113C3A2",
+
+  "Excited":
+    "1E0112D383",
+
+  "Cheery":
+    "1E0111E3E0",
+
+  "Sad":
+    "1E0110F3C1",
+
+  "Scream":
+    "1E010F101F",
+
+  "Startup":
+    "1E010E003E",
+
+  "Surprise":
+    "1E010C207C",
+
+  "Story":
+    "1E010A40BA",
+
+  "Wow":
+    "1E010860F8",
+
+  "Thbt":
+    "1E01068136",
+
+  "Worried":
+    "1E0104A174",
+
+  "Dubious":
+    "1E0102C1B2",
+
+  "Board Startup":
+    "1E0101F1D1",
+
+  "Thinking":
+    "1E0100E1F0"
+
+};
+
+
+async function playSound(name) {
+
+  const command =
+    SOUNDS[name];
+
+
+  if (!command) {
+
+    log(
+      "Unknown sound: " +
+      name
+    );
+
+    return;
+  }
+
+
+  log(
+    "Playing sound: " +
+    name
+  );
+
+
+  await sendCommand(
+    command
+  );
+
+}
+
+
+/* ============================================================
+   BUILD SOUND BUTTONS
+============================================================ */
+
+function createSoundButtons() {
+
+  const container =
+    document.getElementById(
+      "soundButtons"
+    );
+
+
+  for (
+    const name of
+    Object.keys(SOUNDS)
+  ) {
+
+    const button =
+      document.createElement(
+        "button"
+      );
+
+
+    button.textContent =
+      name;
+
+
+    button.onclick =
+      () => playSound(name);
+
+
+    container.appendChild(
+      button
+    );
+
+  }
+
+}
+
+
+createSoundButtons();
+
+
+/* ============================================================
+   UI SLIDERS
+============================================================ */
+
+const speedSlider =
+  document.getElementById(
+    "speedSlider"
+  );
+
+
+speedSlider.addEventListener(
+  "input",
+
+  async function () {
+
+    const speed =
+      Number(this.value) /
+      100;
+
+
+    document.getElementById(
+      "speedValue"
+    ).textContent =
+      speed.toFixed(2);
+
+
+    await drive(speed);
+
+  }
+);
+
+
+/*
+   IMPORTANT:
+
+   When the user releases the drive
+   slider it automatically stops.
+*/
+
+speedSlider.addEventListener(
+  "change",
+
+  async function () {
+
+    this.value = 0;
+
+    await stopR2D2();
+
+  }
+);
+
+
+
+const steeringSlider =
+  document.getElementById(
+    "steeringSlider"
+  );
+
+
+steeringSlider.addEventListener(
+  "input",
+
+  async function () {
+
+    const steering =
+      Number(this.value) /
+      100;
+
+
+    document.getElementById(
+      "steeringValue"
+    ).textContent =
+      steering.toFixed(2);
+
+
+    await steer(
+      steering
+    );
+
+  }
+);
+
+
+/* ============================================================
+   BLUETOOTH AVAILABILITY CHECK
+============================================================ */
+
+(async () => {
+
+  if (
+    !navigator.bluetooth
+  ) {
+
+    log(
+      "Web Bluetooth is not supported in this browser."
+    );
+
+    return;
+  }
+
+
+  try {
+
+    const available =
+      await navigator.bluetooth.getAvailability();
+
+
+    log(
+      "Bluetooth available: " +
+      available
+    );
+
+  }
+  catch (error) {
+
+    log(
+      "Bluetooth availability check failed."
+    );
+
+  }
+
+})();
+
+</script>
+
+</body>
+</html>
